@@ -54,13 +54,33 @@ def scrape_transfermarkt( max_age=None, positions=None, database = 'position_nee
     cursor.execute(create_table_query)
     conn.commit()
 
-    base_url = "https://www.transfermarkt.com/spieler-statistik/wertvollstespieler/marktwertetop/plus/0/galerie/0?page={}"
+    position_mapping = {
+        "Goalkeeper": 1,
+        "Sweeper": 2, 
+        "Centre-Back": 3,
+        "Left-Back": 4,
+        "Right-Back": 5,
+        "Defensive Midfield": 6,
+        "Central Midfield": 8,
+        "Attacking Midfield": 10,
+        "Right Winger": 7,
+        "Left Winger": 9,
+        "Centre-Forward": 11
+    }
+
+    # Determine the position ID for the URL
+    position_id = "alle"  # Default (all positions)
+    if positions and len(positions) == 1 and positions[0] in position_mapping:
+        position_id = position_mapping[positions[0]]
+
+    base_url = f"https://www.transfermarkt.com/spieler-statistik/wertvollstespieler/marktwertetop/plus/0/galerie/0?ausrichtung=alle&spielerposition_id={position_id}"
     headers = {"User-Agent": "Mozilla/5.0"}  
     players = []
     
+    
     page = 1
     while True:
-        response = requests.get(base_url.format(page), headers=headers)
+        response = requests.get(f"{base_url}&page={page}", headers=headers)
         if response.status_code != 200:
             print("Failed to retrieve data on page", page)
             break
@@ -73,8 +93,6 @@ def scrape_transfermarkt( max_age=None, positions=None, database = 'position_nee
         for row in table.find_all("tr", class_=["odd", "even"]):
             cols = row.find_all("td")
             
-            if len(cols) < 9:
-                continue  # Skip rows that don't have enough columns
             
             # Extract Data
             name = cols[1].find_all("tr")[0].text.strip()
@@ -100,25 +118,100 @@ def scrape_transfermarkt( max_age=None, positions=None, database = 'position_nee
                 "Age": age,
                 "Value": value
             }
-            
+
+            if player_data in players:
+                break
+
             # Apply age and position filters
             if (max_age is None or age <= max_age) and (positions is None or position in positions):
                 players.append(player_data)
             
-            if len(players) >= 250:
+            if len(players) >= 100:
                 break 
         
-        if len(players) >= 250:
+        page += 1  
+        if len(players) >= 100:
             break
         
-        page += 1  
-        time.sleep(1)  
+        
     
     insert_query = "INSERT INTO scraped_players (Name, Position, Club, Nationality, Age, Value) VALUES (?, ?, ?, ?, ?, ?)"
     cursor.executemany(insert_query, [(p["Name"], p["Position"], p["Club"], p["Nationality"], p["Age"], p["Value"]) for p in players])
-
+    conn.commit()
     df = pd.read_sql_query("SELECT * FROM scraped_players", conn)
     print(df)
     conn.close()
 
-scrape_transfermarkt(25, ["Right-Back"])
+# scrape_transfermarkt(25, ["Right-Back"])
+
+def get_transfermarkt_players(database=db):
+    """
+    Retrieves player names from the 'scraped_players' table in the database.
+    """
+    conn = sqlite3.connect(database)
+    cursor = conn.cursor()
+    cursor.execute("SELECT Name FROM scraped_players")
+    players = [row[0] for row in cursor.fetchall()]
+    conn.close()
+    return players
+
+def scrape_fbref(db = db):
+    table_drop('leagues')
+    table_drop('teams')
+    table_drop('players')
+    # Create tables
+    cursor.executescript('''
+        CREATE TABLE IF NOT EXISTS leagues (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT UNIQUE,
+            url TEXT
+        );
+        
+        CREATE TABLE IF NOT EXISTS teams (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT UNIQUE,
+            league_id INTEGER,
+            FOREIGN KEY (league_id) REFERENCES leagues(id)
+        );
+        
+        CREATE TABLE IF NOT EXISTS players (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT,
+            position TEXT,
+            team_id INTEGER,
+            nationality TEXT,
+            age INTEGER,
+            value FLOAT,
+            unique_url TEXT,
+            FOREIGN KEY (team_id) REFERENCES teams(id)
+        );
+    ''')
+    conn.commit()
+
+    # League URLs
+    league_urls = {
+        "Champions League": "https://fbref.com/en/comps/8/Champions-League-Stats",
+        "Europa League": "https://fbref.com/en/comps/19/Europa-League-Stats",
+        "Big 5 European Leagues": "https://fbref.com/en/comps/Big5/Big-5-European-Leagues-Stats",
+        "Championship": "https://fbref.com/en/comps/10/Championship-Stats",
+        "Major League Soccer": "https://fbref.com/en/comps/22/Major-League-Soccer-Stats",
+        "Serie A": "https://fbref.com/en/comps/24/Serie-A-Stats",
+        "Serie B": "https://fbref.com/en/comps/18/Serie-B-Stats",
+        "Eredivisie": "https://fbref.com/en/comps/23/Eredivisie-Stats",
+        "Primeira Liga": "https://fbref.com/en/comps/32/Primeira-Liga-Stats",
+        "Liga MX": "https://fbref.com/en/comps/31/Liga-MX-Stats",
+        "Belgian Pro League": "https://fbref.com/en/comps/37/Belgian-Pro-League-Stats",
+        "Segunda Division": "https://fbref.com/en/comps/17/Segunda-Division-Stats"
+    }
+
+    # Insert leagues
+    for name, url in league_urls.items():
+        cursor.execute("INSERT OR IGNORE INTO leagues (name, url) VALUES (?, ?)", (name, url))
+    conn.commit()
+    
+    df = pd.read_sql_query("SELECT * FROM teams", conn)
+    print(df)
+    conn.close()
+    print("Database populated with teams and players.")
+
+scrape_fbref()
