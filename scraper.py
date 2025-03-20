@@ -4,6 +4,7 @@ import pandas as pd
 import time
 import re
 import sqlite3
+import cloudscraper
 
 db = 'position_needs.db'
 conn = sqlite3.connect(db)
@@ -171,6 +172,7 @@ def scrape_fbref(db = db):
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             name TEXT UNIQUE,
             league_id INTEGER,
+            url TEXT, 
             FOREIGN KEY (league_id) REFERENCES leagues(id)
         );
         
@@ -209,9 +211,34 @@ def scrape_fbref(db = db):
         cursor.execute("INSERT OR IGNORE INTO leagues (name, url) VALUES (?, ?)", (name, url))
     conn.commit()
     
-    df = pd.read_sql_query("SELECT * FROM teams", conn)
-    print(df)
-    conn.close()
-    print("Database populated with teams and players.")
+    for league_name, league_url in league_urls.items():
+        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"}
+        scraper = cloudscraper.create_scraper()
+        response = scraper.get(league_url, headers=headers)
+        if response.status_code != 200:
+            print(f"Failed to retrieve {league_name} data.")
+            continue
+        soup = BeautifulSoup(response.text, 'html.parser')
 
+        # Get league ID
+        cursor.execute("SELECT id FROM leagues WHERE name = ?", (league_name,))
+        league_id = cursor.fetchone()[0]
+
+        teams_table = soup.find("table", class_="stats_table")
+        if teams_table:
+            for row in teams_table.find_all("tr"):
+                link = row.find("a")
+                if link:
+                    team_name = link.text
+                    team_url = "https://fbref.com" + link.get("href")
+                    cursor.execute("INSERT OR IGNORE INTO teams (name, league_id, url) VALUES (?, ?, ?)", (team_name, league_id, team_url))
+
+    conn.commit()
+    df = pd.read_sql_query("SELECT * FROM teams WHERE name = 'Liverpool'", conn)
+    print(df)
+    if df.empty:
+        print("No teams found. Please check the website structure.")
+    if df.empty:
+        print("No teams found. Check the HTML structure.")
+    conn.close()
 scrape_fbref()
